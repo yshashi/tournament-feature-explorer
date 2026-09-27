@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tournament Flow Explorer</title>
+<meta name="description" content="Animated walkthrough of how data moves through the Live Tournaments architecture: Kafka, Scoring Worker, PostgreSQL, Redis, SignalR and the outbox.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#F4F5FA; --surface:#FFFFFF; --surface-2:#EEF0F7; --ink:#151936; --muted:#5A6180;
+  --line:#DADDEB; --edge:#C3C8DA;
+  --ours-f:#E9ECFF; --ours-s:#5263E6;
+  --ext-f:#F3F4F8; --ext-s:#9AA0B4;
+  --store-f:#E2F5EC; --store-s:#2C9468;
+  --bus-f:#FFF1D9; --bus-s:#C27F10;
+  --mon-f:#F3E9FA; --mon-s:#8A4DBF;
+  --client-f:#FFFFFF; --client-s:#151936;
+  --p-http:#4C5FE8; --p-push:#0B8FA0; --p-kafka:#B87508; --p-db:#248A5E; --p-fail:#C83E4D; --p-metric:#8A4DBF;
+  --chip-ink:#FFFFFF;
+  --danger:#C83E4D; --danger-f:#FBE3E6;
+  --code-bg:#161A36; --code-ink:#E4E7F7; --code-dim:#9097BD;
+  --flash:#FFF2B8;
+  --display:"Bricolage Grotesque","Avenir Next","Segoe UI",system-ui,sans-serif;
+  --body:"IBM Plex Sans","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#0E1124; --surface:#161A33; --surface-2:#1C2140; --ink:#E6E8F5; --muted:#9BA1C2;
+    --line:#2A3056; --edge:#3A4172;
+    --ours-f:#1F2658; --ours-s:#8391FF; --ext-f:#1B1E33; --ext-s:#6E7494;
+    --store-f:#12302A; --store-s:#4FCB96; --bus-f:#35280E; --bus-s:#E8A83E;
+    --mon-f:#2A1D3C; --mon-s:#BB8DEB; --client-f:#161A33; --client-s:#E6E8F5;
+    --p-http:#8391FF; --p-push:#3CC6D8; --p-kafka:#E8A83E; --p-db:#4FCB96; --p-fail:#F2727F; --p-metric:#BB8DEB;
+    --chip-ink:#0E1124; --danger:#F2727F; --danger-f:#3A1820;
+    --code-bg:#0A0C1C; --code-ink:#E4E7F7; --code-dim:#7C83AA; --flash:#4A3F12;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0E1124; --surface:#161A33; --surface-2:#1C2140; --ink:#E6E8F5; --muted:#9BA1C2;
+  --line:#2A3056; --edge:#3A4172;
+  --ours-f:#1F2658; --ours-s:#8391FF; --ext-f:#1B1E33; --ext-s:#6E7494;
+  --store-f:#12302A; --store-s:#4FCB96; --bus-f:#35280E; --bus-s:#E8A83E;
+  --mon-f:#2A1D3C; --mon-s:#BB8DEB; --client-f:#161A33; --client-s:#E6E8F5;
+  --p-http:#8391FF; --p-push:#3CC6D8; --p-kafka:#E8A83E; --p-db:#4FCB96; --p-fail:#F2727F; --p-metric:#BB8DEB;
+  --chip-ink:#0E1124; --danger:#F2727F; --danger-f:#3A1820;
+  --code-bg:#0A0C1C; --code-ink:#E4E7F7; --code-dim:#7C83AA; --flash:#4A3F12;
+}
+
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1440px;margin:0 auto;padding-inline:clamp(16px,3vw,40px);padding-block:28px 56px;display:flex;flex-direction:column;gap:22px}
+
+/* header */
+.top{display:flex;flex-wrap:wrap;gap:18px 40px;align-items:flex-end;justify-content:space-between}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(28px,4vw,44px);line-height:1.05;letter-spacing:-.02em;margin:0;text-wrap:balance}
+.lead{margin:10px 0 0;max-width:62ch;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12.5px;color:var(--muted);max-width:560px}
+.legend span{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.sw{width:14px;height:10px;border-radius:3px;border:1.5px solid;display:inline-block}
+.sw.ours{background:var(--ours-f);border-color:var(--ours-s)}
+.sw.existing{background:var(--ext-f);border-color:var(--ext-s);border-style:dashed}
+.sw.store{background:var(--store-f);border-color:var(--store-s)}
+.sw.bus{background:var(--bus-f);border-color:var(--bus-s)}
+.sw.mon{background:var(--mon-f);border-color:var(--mon-s)}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+/* scenario tabs */
+.tabs{display:flex;flex-wrap:wrap;gap:8px}
+.tab{appearance:none;border:1.5px solid var(--line);background:var(--surface);color:var(--ink);font:500 14px var(--body);padding:8px 14px;border-radius:999px;cursor:pointer;display:inline-flex;gap:8px;align-items:center}
+.tab .n{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.tab:hover{border-color:var(--ours-s)}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tab[aria-selected="true"] .n{color:var(--bg);opacity:.7}
+button:focus-visible,select:focus-visible,.steps button:focus-visible{outline:2.5px solid var(--focus,var(--p-http));outline-offset:2px}
+
+/* stage */
+.stage{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px;align-items:start}
+.main{display:flex;flex-direction:column;gap:14px;min-width:0}
+.side{position:sticky;top:calc(env(safe-area-inset-top, 0px) + 16px)}
+@media (max-width:1100px){.side{position:static}}
+@media (max-width:1100px){.stage{grid-template-columns:minmax(0,1fr)}}
+.board{background:var(--surface);border:1px solid var(--line);border-radius:16px;display:flex;flex-direction:column;min-width:0}
+.scroll{overflow-x:auto;padding:14px 14px 4px}
+svg.arch{display:block;width:100%;min-width:760px;height:auto}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 16px 16px;border-top:1px solid var(--line)}
+.btn{appearance:none;border:1.5px solid var(--line);background:var(--surface-2);color:var(--ink);font:600 14px var(--body);padding:9px 16px;border-radius:10px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+.btn:hover{border-color:var(--ours-s)}
+.btn.primary{background:var(--ours-s);border-color:var(--ours-s);color:#fff;min-width:108px;justify-content:center}
+:root[data-theme="dark"] .btn.primary{color:#0E1124}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .btn.primary{color:#0E1124}}
+.btn:disabled{opacity:.45;cursor:default}
+.btn svg{width:14px;height:14px;fill:currentColor}
+.spacer{flex:1}
+.progress{font-family:var(--mono);font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+label.speed{font-size:13px;color:var(--muted);display:inline-flex;gap:6px;align-items:center}
+select{font:500 13px var(--body);background:var(--surface-2);color:var(--ink);border:1.5px solid var(--line);border-radius:8px;padding:6px 8px}
+.bar{height:3px;background:var(--line);margin:0 16px 0;border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--ours-s);transition:width .35s ease}
+
+/* diagram */
+.edge{fill:none;stroke:var(--edge);stroke-width:1.7;stroke-linejoin:round;stroke-linecap:round;transition:opacity .25s,stroke .25s}
+svg.busy .edge{opacity:.4}
+.edge.active{stroke:var(--pc);stroke-width:3;opacity:1!important}
+.node rect{stroke-width:1.6;transition:stroke-width .2s}
+.node .nt{font:600 17px var(--body);fill:var(--ink)}
+.node .ns{font:500 12.5px var(--mono);fill:var(--muted)}
+.k-ours rect{fill:var(--ours-f);stroke:var(--ours-s)}
+.k-existing rect{fill:var(--ext-f);stroke:var(--ext-s);stroke-dasharray:6 4}
+.k-store rect{fill:var(--store-f);stroke:var(--store-s)}
+.k-bus rect{fill:var(--bus-f);stroke:var(--bus-s)}
+.k-mon rect{fill:var(--mon-f);stroke:var(--mon-s)}
+.k-client rect{fill:var(--client-f);stroke:var(--client-s)}
+.node.hot rect{stroke-width:3.5;animation:pulse 1.2s ease-out 1}
+.node.down rect{fill:var(--danger-f);stroke:var(--danger);stroke-dasharray:none;stroke-width:2.5}
+.node.down .ns{fill:var(--danger)}
+@keyframes pulse{0%{stroke-opacity:.2}40%{stroke-opacity:1}100%{stroke-opacity:1}}
+.zone{font:500 11px var(--mono);fill:var(--muted);letter-spacing:.06em}
+#packet circle{fill:var(--pc);stroke:var(--surface);stroke-width:2.5}
+#packet rect{fill:var(--pc)}
+#packet text{font:600 13px var(--mono);fill:var(--chip-ink)}
+
+/* side panel */
+.side{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.narr .count{font-family:var(--mono);font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:10px;align-items:center}
+.pill{font:600 11px var(--mono);letter-spacing:.04em;padding:3px 8px;border-radius:999px;color:var(--chip-ink);background:var(--pc,var(--muted));white-space:nowrap}
+.narr h2{font-family:var(--display);font-weight:600;font-size:22px;line-height:1.2;margin:8px 0 6px;letter-spacing:-.01em;text-wrap:balance}
+.narr p{margin:0 0 10px;max-width:62ch}
+pre{margin:6px 0 0;background:var(--code-bg);color:var(--code-ink);font:400 12.5px/1.55 var(--mono);padding:12px 14px;border-radius:10px;overflow-x:auto;white-space:pre}
+pre .c{color:var(--code-dim)}
+.steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;counter-reset:s}
+.steps li{counter-increment:s}
+.steps button{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:26px 1fr;gap:6px;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13.5px;color:var(--muted);line-height:1.35}
+.steps button::before{content:counter(s);font:500 12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums;padding-top:1px}
+.steps button:hover{background:var(--surface-2);color:var(--ink)}
+.steps .done button{color:var(--ink)}
+.steps .now button{background:var(--surface-2);color:var(--ink);font-weight:600;box-shadow:inset 3px 0 0 var(--ours-s)}
+details.card summary{cursor:pointer;font-weight:600;font-size:14px}
+details.card[open] summary{margin-bottom:10px}
+
+.state{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.insp{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px;min-width:0}
+.insp h3{margin:0;font:600 13.5px var(--body)}
+.insp .sub{font:400 11px var(--mono);color:var(--muted);margin:1px 0 8px;overflow-wrap:anywhere}
+.insp table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.insp td{padding:3px 0;border-top:1px dashed var(--line);vertical-align:top}
+.insp tr:first-child td{border-top:0}
+.insp td:last-child{text-align:right;font-family:var(--mono);font-size:12.5px;padding-left:8px}
+.insp td.rk{width:22px;color:var(--muted);font-family:var(--mono);font-size:12px}
+.insp tr.me td{font-weight:600}
+.insp .note{font-size:12px;color:var(--muted);margin-top:6px}
+.insp .note.bad{color:var(--danger);font-weight:600}
+.changed{animation:flash 1.6s ease-out 1}
+@keyframes flash{0%,35%{background:var(--flash)}100%{background:transparent}}
+.foot{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+kbd{font:500 11px var(--mono);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--surface)}
+
+@media (prefers-reduced-motion: reduce){
+  .node.hot rect,.changed{animation:none}
+  .bar i{transition:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Live Tournaments · data flow walkthrough</p>
+      <h1>Tournament Flow Explorer</h1>
+      <p class="lead">Pick a scenario and press Play. Each packet is one real message or query moving between services, and the panel on the right shows what changes in Kafka, PostgreSQL and Redis at every step.</p>
+    </div>
+    <div class="legend" aria-label="Legend">
+      <span><i class="sw ours"></i>Our services</span>
+      <span><i class="sw existing"></i>Existing services</span>
+      <span><i class="sw store"></i>Data stores</span>
+      <span><i class="sw bus"></i>Kafka</span>
+      <span><i class="sw mon"></i>Monitoring</span>
+      <span><i class="dot" style="background:var(--p-http)"></i>HTTP</span>
+      <span><i class="dot" style="background:var(--p-push)"></i>Live push</span>
+      <span><i class="dot" style="background:var(--p-kafka)"></i>Kafka message</span>
+      <span><i class="dot" style="background:var(--p-db)"></i>Database write/read</span>
+      <span><i class="dot" style="background:var(--p-metric)"></i>Metric or alert</span>
+      <span><i class="dot" style="background:var(--p-fail)"></i>Failure</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Scenarios" id="tabs"></nav>
+
+  <div class="stage">
+    <div class="main">
+    <section class="board" aria-label="Architecture diagram">
+      <figure style="margin:0">
+        <div class="scroll">
+          <svg class="arch" id="arch" viewBox="0 0 1190 690" role="img" aria-label="Architecture: phones, gateway, Tournament API, Realtime Hub, Scoring Worker, Orchestrator, Kafka, PostgreSQL, Redis, Economy and monitoring, with animated messages between them.">
+            <g id="edges"></g>
+            <g id="nodes"></g>
+            <g id="packet" style="display:none">
+              <circle r="8"></circle>
+              <rect rx="6" height="24"></rect>
+              <text dy="0"></text>
+            </g>
+          </svg>
+        </div>
+      </figure>
+      <div class="bar" aria-hidden="true"><i id="bar"></i></div>
+      <div class="controls">
+        <button class="btn" id="prev" type="button" aria-label="Previous step"><svg viewBox="0 0 16 16"><path d="M10.5 2 4.5 8l6 6z"/></svg>Back</button>
+        <button class="btn primary" id="play" type="button"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg><span>Play</span></button>
+        <button class="btn" id="next" type="button" aria-label="Next step">Next<svg viewBox="0 0 16 16"><path d="M5.5 2l6 6-6 6z"/></svg></button>
+        <button class="btn" id="restart" type="button">Restart</button>
+        <span class="spacer"></span>
+        <label class="speed" for="speed">Speed
+          <select id="speed">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="1.6">1.6x</option>
+            <option value="2.5">2.5x</option>
+          </select>
+        </label>
+        <span class="progress" id="progress">0 / 0</span>
+      </div>
+    </section>
+      <section class="state" id="state" aria-label="System state"></section>
+    </div>
+
+    <aside class="side">
+      <section class="card narr" aria-live="polite">
+        <div class="count"><span id="count">Ready</span><span class="pill" id="pill">start</span></div>
+        <h2 id="title"></h2>
+        <p id="text"></p>
+        <pre id="code" hidden></pre>
+      </section>
+
+      <details class="card" open>
+        <summary>All steps in this scenario</summary>
+        <ol class="steps" id="steps"></ol>
+      </details>
+    </aside>
+  </div>
+
+  <footer class="foot">
+    <span><kbd>Space</kbd> play or pause</span>
+    <span><kbd>←</kbd> <kbd>→</kbd> step back or forward</span>
+    <span>Players, ids and offsets are example values from the design: tournament t42, cohort c91, partition P2.</span>
+  </footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------- diagram layout ---------- */
+const W = 180, H = 64;
+const NODES = {
+  anna:     {x:20,  y:40,  t:"Anna's phone",      s:"plays the board",        k:"client"},
+  gameplay: {x:250, y:40,  t:"Gameplay service",  s:"existing · rolls dice",  k:"existing"},
+  kafka:    {x:480, y:40,  w:200, t:"Kafka",      s:"topics · 24 partitions", k:"bus"},
+  worker:   {x:740, y:40,  t:"Scoring Worker",    s:"KEDA · 2 to 24 pods",    k:"ours"},
+  pg:       {x:980, y:40,  t:"PostgreSQL",        s:"source of truth",        k:"store"},
+  bob:      {x:20,  y:250, t:"Bob's phone",       s:"leaderboard screen",     k:"client"},
+  gateway:  {x:250, y:250, t:"API Gateway",       s:"TLS · JWT · limits",     k:"existing"},
+  api:      {x:480, y:250, t:"Tournament API",    s:"REST · 3 to 10 pods",    k:"ours"},
+  realtime: {x:740, y:250, t:"Realtime Hub",      s:"SignalR · 2 to 6 pods",  k:"ours"},
+  redis:    {x:980, y:250, t:"Redis",             s:"sorted sets · pub/sub",  k:"store"},
+  economy:  {x:250, y:460, t:"Economy service",   s:"existing · wallets",     k:"existing"},
+  orch:     {x:480, y:460, t:"Orchestrator",      s:"Quartz · outbox relay",  k:"ours"},
+  prom:     {x:480, y:600, t:"Prometheus",        s:"scrape · alert rules",   k:"mon"},
+  alert:    {x:740, y:600, t:"Alertmanager",      s:"group · route",          k:"mon"},
+  pager:    {x:980, y:600, t:"PagerDuty",         s:"on-call phone",          k:"mon"}
+};
+const EDGES = {
+  "anna>gameplay":    "M200 72 H250",
+  "gameplay>kafka":   "M430 72 H480",
+  "kafka>worker":     "M680 72 H740",
+  "worker>pg":        "M920 72 H980",
+  "worker>redis":     "M830 104 V168 H1030 V250",
+  "redis>realtime":   "M980 282 H920",
+  "realtime>gateway": "M830 314 V396 H340 V314",
+  "bob>gateway":      "M200 282 H250",
+  "gateway>api":      "M430 282 H480",
+  "api>redis":        "M610 250 V210 H1052 V250",
+  "api>pg":           "M550 250 V190 H1112 V104",
+  "pg>redis":         "M1140 104 V250",
+  "orch>kafka":       "M480 480 H459 V92 H480",
+  "kafka>economy":    "M480 100 H445 V506 H430",
+  "orch>pg":          "M660 500 H956 V90 H980",
+  "worker>prom":      "M740 88 H714 V618 H660",
+  "prom>alert":       "M660 642 H740",
+  "alert>pager":      "M920 632 H980"
+};
+
+const svgNS = "http://www.w3.org/2000/svg";
+const $ = id => document.getElementById(id);
+const el = (tag, attrs, parent) => { const e = document.createElementNS(svgNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+
+const edgeEls = {};
+for (const key in EDGES) edgeEls[key] = el("path", {d: EDGES[key], class: "edge"}, $("edges"));
+
+const nodeEls = {};
+for (const id in NODES) {
+  const n = NODES[id], w = n.w || W;
+  const g = el("g", {class: "node k-" + n.k, "data-id": id}, $("nodes"));
+  el("rect", {x: n.x, y: n.y, width: w, height: H, rx: 11}, g);
+  const t = el("text", {x: n.x + 16, y: n.y + 28, class: "nt"}, g); t.textContent = n.t;
+  const s = el("text", {x: n.x + 16, y: n.y + 49, class: "ns"}, g); s.textContent = n.s;
+  nodeEls[id] = g;
+}
+
+function resolve(a, b){
+  if (edgeEls[a + ">" + b]) return {el: edgeEls[a + ">" + b], rev: false};
+  if (edgeEls[b + ">" + a]) return {el: edgeEls[b + ">" + a], rev: true};
+  throw new Error("No edge " + a + " to " + b);
+}
+
+/* ---------- scenarios ---------- */
+const P = ["anna", "bob", "carl"];
+const NAMES = {anna: "Anna", bob: "Bob", carl: "Carl"};
+const TYPE_LABEL = {http: "HTTP", push: "live push", kafka: "Kafka", db: "database", fail: "failure", metric: "metric", node: "inside"};
+
+const S = [
+{
+  id: "score", name: "Score a point",
+  intro: "Anna rolls x10, lands on a Railroad and wins a Bank Heist. Follow her 40 points from the dice roll, through Kafka, PostgreSQL and Redis, to Bob's screen.",
+  init: {
+    kafka: {end: 5000, committed: 5001, owner: "Worker B"},
+    pg: {anna: 1200, bob: 1235, carl: 1150, events: 12480},
+    redis: {anna: 1200, bob: 1235, carl: 1150},
+    screen: {anna: 1200, bob: 1235, carl: 1150}
+  },
+  steps: [
+    {hops: [["anna","gameplay"]], type: "http", chip: "roll x10", title: "Anna rolls the dice",
+     text: "The app sends only the roll. The Gameplay service resolves it on the server: Railroad, Bank Heist won, multiplier x10. The client never sends points."},
+    {hops: [["gameplay","kafka"]], type: "kafka", chip: "GameplayActionCompleted", title: "Gameplay publishes an event",
+     text: "One message goes to the gameplay.actions topic. The key is Anna's playerId, so Kafka hashes it to partition P2. Every event Anna makes lands in P2, in order.",
+     code: '{\n  "eventId": "7c1e9a40",\n  "playerId": "anna",\n  "actionType": "RailroadHeist",\n  "multiplier": 10,\n  "occurredAt": "17:59:58.412Z"\n}\n<c>key = "anna"  ->  partition P2, offset 5001</c>',
+     set: {"kafka.end": 5001}},
+    {hops: [["kafka","worker"]], type: "kafka", chip: "batch of 500", title: "The Scoring Worker pulls a batch",
+     text: "Worker B owns partitions P2 and P3. It collects up to 500 messages or 50 ms, whichever comes first. Most of them are ignored in memory because they don't score.",
+     code: "<c>P2</c>  5001  anna  RailroadHeist  x10   <c>scores</c>\n<c>P2</c>  5002  carl  PassGo         x2    <c>ignored</c>\n<c>P3</c>  8810  dana  BuildHouse     x1    <c>ignored</c>\n<c>...  up to 500 messages</c>"},
+    {node: "worker", type: "node", title: "Filter and compute, in memory",
+     text: "Is a tournament live with a rule for RailroadHeist? Yes, 4 points. Did it happen between startsAt and endsAt? Yes. So 4 x 10 = 40 points. No database call yet.",
+     code: "rule RailroadHeist = 4 points\n4 x multiplier 10  = 40 points\noccurredAt inside [12:00, 18:00]  <c>ok</c>"},
+    {hops: [["worker","pg"]], type: "db", chip: "INSERT ON CONFLICT", title: "PostgreSQL first: the truth",
+     text: "One transaction for the whole batch. The event id goes into score_events, and if it is already there nothing happens. Only newly inserted events add to the score. Anna goes from 1,200 to 1,240.",
+     code: "INSERT INTO score_events (tournament_id, event_id, entry_id, points)\nVALUES ('t42', '7c1e9a40', 'e1', 40)\nON CONFLICT (tournament_id, event_id) DO NOTHING\nRETURNING entry_id, points;\n\nUPDATE entries SET score = score + 40   <c>-- only for new rows</c>\nWHERE id = 'e1';\nCOMMIT;",
+     set: {"pg.anna": 1240, "pg.events": 12481}},
+    {hops: [["worker","redis"]], type: "db", chip: "ZADD 1240", title: "Then Redis: the fast copy",
+     text: "Only after the commit, the worker writes Anna's new total into her cohort's sorted set. It writes the total, not +40, so running it twice changes nothing. The number also encodes the tie-break.",
+     code: "ZADD lb:t42:c91 12409999996400 anna\n<c>1240 x 10^10 + (10^10 - 3600 seconds)</c>",
+     set: {"redis.anna": 1240}},
+    {hops: [["worker","redis"]], type: "push", chip: "PUBLISH c91", title: "Tell the Realtime Hub",
+     text: "Same Redis pipeline, one more command: a pub/sub message saying cohort c91 changed. It carries no scores, only the cohort id.",
+     code: "PUBLISH SignalR:cohort:c91 changed"},
+    {hops: [["worker","kafka"]], type: "kafka", chip: "commit 5002", title: "Commit the Kafka offset, last",
+     text: "Now the worker tells Kafka it is done with 5001 by committing 5002, the next offset to read. A crash before this point means the batch is delivered again, which is safe because of the dedupe in step 5.",
+     code: "consumer.Commit(new TopicPartitionOffset(\"gameplay.actions\", 2, 5001 + 1));",
+     set: {"kafka.committed": 5002}},
+    {hops: [["redis","realtime"]], type: "push", chip: "c91 changed", title: "Every Realtime pod hears it",
+     text: "All Realtime pods subscribe to SignalR:cohort:*. Each pod that has c91 viewers connected will push to them. Pods without c91 viewers ignore the message."},
+    {hops: [["realtime","redis"]], type: "db", chip: "ZREVRANGE 0 49", title: "Read the latest top 50",
+     text: "A pod pushes at most once every 1.5 seconds per cohort. When its window opens it reads the current top 50, so the push always carries the newest state.",
+     code: "ZREVRANGE lb:t42:c91 0 49 WITHSCORES\n1) anna  12409999996400\n2) bob   12349999992800\n3) carl  11509999990000"},
+    {hops: [["realtime","gateway"]], type: "push", chip: "LeaderboardSnapshot", title: "Push over the WebSocket",
+     text: "The snapshot is 50 rows, about 4 KB. Its version number lets the app drop an older snapshot that arrives late.",
+     code: '{\n  "cohortId": "c91",\n  "version": 1874,\n  "rows": [\n    { "rank": 1, "playerId": "anna", "score": 1240 },\n    { "rank": 2, "playerId": "bob",  "score": 1235 }\n  ]\n}'},
+    {hops: [["gateway","bob"]], type: "push", chip: "50 rows", title: "Bob sees Anna pass him",
+     text: "About a second after Anna's roll, Bob's list updates: Anna on 1,240 is now above Bob on 1,235. The whole trip cost one PostgreSQL transaction and one Redis pipeline for the batch.",
+     set: {"screen.anna": 1240}}
+  ]
+},
+{
+  id: "open", name: "Open the leaderboard",
+  intro: "Bob opens the tournament screen. One REST call loads the current state, then a WebSocket keeps it live.",
+  init: {
+    pg: {anna: 1240, bob: 1235, carl: 1150},
+    redis: {anna: 1240, bob: 1235, carl: 1150},
+    screen: {note: "Screen closed"}
+  },
+  steps: [
+    {hops: [["bob","gateway"]], type: "http", chip: "GET /v1/tournaments/active", title: "Bob opens the tournament screen",
+     text: "The app sends its JWT. The gateway checks the token and the rate limit before anything reaches our services.",
+     code: "GET /v1/tournaments/active\nAuthorization: Bearer eyJhbGciOi..."},
+    {hops: [["gateway","api"]], type: "http", chip: "sub = bob", title: "The API takes the player from the token",
+     text: "The Tournament API reads the playerId from the token's sub claim. It never trusts a player id sent by the app."},
+    {hops: [["api","pg"]], type: "db", chip: "my entry", title: "Which tournament, which cohort?",
+     text: "Tournament definitions are cached, so this is mostly one lookup: Bob's entry, with his cohort, score and next milestone.",
+     code: "SELECT cohort_id, score\nFROM entries\nWHERE tournament_id = 't42' AND player_id = 'bob';\n<c>-> c91, 1235</c>"},
+    {hops: [["api","redis"]], type: "db", chip: "ZREVRANGE 0 49", title: "Read the cohort leaderboard",
+     text: "The 50 rows come from Redis in one command, already sorted, tie-break included. Names and avatars come from a one-hour cache.",
+     code: "ZREVRANGE lb:t42:c91 0 49 WITHSCORES"},
+    {hops: [["api","gateway"], ["gateway","bob"]], type: "http", chip: "200 + ETag", title: "Bob sees the list",
+     text: "The response includes an ETag and serverTime. Next time the app asks, an unchanged leaderboard costs a 304 with no body, and the countdown uses the server clock.",
+     code: 'HTTP/1.1 200 OK\nETag: "1874"\n{ "serverTime": "17:12:03Z", "rows": [ ...50 rows... ] }',
+     set: {"screen": {anna: 1240, bob: 1235, carl: 1150}}},
+    {hops: [["bob","gateway"], ["gateway","realtime"]], type: "push", chip: "WebSocket + JWT", title: "Open the live connection",
+     text: "The app connects to /hubs/tournaments. WebSocket clients can't set custom headers, so the token travels in the access_token query string on the handshake.",
+     code: "wss://api.example/hubs/tournaments?access_token=eyJ..."},
+    {hops: [["bob","gateway"], ["gateway","realtime"]], type: "push", chip: "JoinCohort(t42)", title: "Join the cohort group",
+     text: "The app sends only the tournament id. The hub looks up Bob's cohort itself, so nobody can listen to a cohort they are not in.",
+     code: "await conn.invoke(\"JoinCohort\", \"t42\");"},
+    {node: "realtime", type: "node", title: "Add the connection to cohort:c91",
+     text: "The hub adds this connection to the group cohort:c91 on this pod. From now on, every push for c91 from this pod reaches Bob.",
+     code: "await Groups.AddToGroupAsync(Context.ConnectionId, \"cohort:c91\");"},
+    {hops: [["realtime","gateway"], ["gateway","bob"]], type: "push", chip: "snapshot v1874", title: "Instant snapshot, then live",
+     text: "The hub sends the current snapshot straight away. After that, a new snapshot arrives only when someone in c91 scores, at most every 1.5 seconds.",
+     set: {"screen.note": "Live: updates arrive on their own"}}
+  ]
+},
+{
+  id: "crash", name: "Crash and redelivery",
+  intro: "Worker B saves Anna's points, then crashes before committing the Kafka offset. The event is delivered again. Watch why Anna is still counted once.",
+  init: {
+    kafka: {end: 5001, committed: 5001, owner: "Worker B"},
+    pg: {anna: 1200, bob: 1235, carl: 1150, events: 12480},
+    redis: {anna: 1200, bob: 1235, carl: 1150}
+  },
+  steps: [
+    {hops: [["kafka","worker"]], type: "kafka", chip: "offset 5001", title: "Worker B reads Anna's event",
+     text: "Same event as before: RailroadHeist x10, worth 40 points, at offset 5001 in partition P2."},
+    {hops: [["worker","pg"]], type: "db", chip: "COMMIT", title: "Points saved in PostgreSQL",
+     text: "The transaction commits. PostgreSQL now records event 7c1e9a40 in score_events and Anna's score as 1,240.",
+     set: {"pg.anna": 1240, "pg.events": 12481}},
+    {hops: [["worker","redis"]], type: "db", chip: "ZADD 1240", title: "Redis updated",
+     text: "The sorted set now has Anna on 1,240.", set: {"redis.anna": 1240}},
+    {node: "worker", type: "fail", title: "Worker B crashes",
+     text: "The pod is killed, say by a node failure, before it commits offset 5002. Kafka still believes the group has only reached 5001.",
+     set: {"down.worker": true, "kafka.owner": "nobody (Worker B lost)"}},
+    {node: "kafka", type: "kafka", title: "Kafka rebalances the partitions",
+     text: "Kafka notices Worker B stopped heartbeating and hands P2 and P3 to Worker A. Worker A asks where the group got to: offset 5001.",
+     set: {"down.worker": false, "kafka.owner": "Worker A"}},
+    {hops: [["kafka","worker"]], type: "kafka", chip: "offset 5001 again", title: "The same event arrives again",
+     text: "Worker A receives Anna's event a second time. This is at-least-once delivery doing its job: nothing was lost, and a duplicate is the price."},
+    {hops: [["worker","pg"]], type: "db", chip: "ON CONFLICT DO NOTHING", title: "The primary key says: already done",
+     text: "The insert hits the existing event id and inserts zero rows. Only new rows add points, so Anna stays at 1,240. No if-statement in C# made this decision; the primary key did.",
+     code: "INSERT INTO score_events ... VALUES ('t42', '7c1e9a40', ...)\nON CONFLICT (tournament_id, event_id) DO NOTHING\nRETURNING entry_id;\n<c>-> 0 rows. No UPDATE runs. Score unchanged.</c>"},
+    {hops: [["worker","redis"]], type: "db", chip: "ZADD 1240", title: "Redis write repeated, harmlessly",
+     text: "ZADD sets the same total again and nothing changes. Had Worker B crashed before its Redis write, this step would have repaired Redis."},
+    {hops: [["worker","kafka"]], type: "kafka", chip: "commit 5002", title: "Offset committed",
+     text: "Worker A commits 5002. The event was processed twice and counted once. That is at-least-once delivery plus an idempotent consumer.",
+     set: {"kafka.committed": 5002}}
+  ]
+},
+{
+  id: "rewards", name: "Tournament ends",
+  intro: "At 18:00 the Orchestrator freezes ranks from PostgreSQL and pays Anna 2,000 dice through the transactional outbox, exactly once.",
+  init: {
+    pg: {anna: 1240, bob: 1235, carl: 1150, tstate: "Active", results: "none yet"},
+    rewards: {grant: "none", outbox: "none", wallet: "350 dice"},
+    screen: {note: "App closed"}
+  },
+  steps: [
+    {node: "orch", type: "node", title: "18:00: Quartz fires the job",
+     text: "Both Orchestrator replicas share Quartz's tables in PostgreSQL. A database row lock lets exactly one of them run the finalize job for t42. The other is a hot standby.",
+     code: "[DisallowConcurrentExecution]\npublic sealed class FinalizeTournamentJob : IJob { ... }"},
+    {hops: [["orch","pg"]], type: "db", chip: "state = Finalizing", title: "Stop accepting points",
+     text: "From now on the Scoring Worker rejects new events for t42.",
+     code: "UPDATE tournaments SET state = 'Finalizing' WHERE id = 't42';",
+     set: {"pg.tstate": "Finalizing"}},
+    {hops: [["orch","kafka"], ["kafka","worker"]], type: "kafka", chip: "TournamentEnded", title: "Tell every worker",
+     text: "TournamentEnded goes out on the tournament.lifecycle topic, so every worker pod drops t42 from its in-memory list of active tournaments."},
+    {node: "orch", type: "node", title: "Wait for the grace window",
+     text: "A roll at 17:59:59 may still be sitting in Kafka. The Orchestrator waits until the scoring lag has passed endsAt, two minutes at most, so on-time events that arrive late still count."},
+    {hops: [["orch","pg"]], type: "db", chip: "ONE transaction", title: "Ranks, grants and outbox, together",
+     text: "One transaction ranks every cohort from entries, inserts results, a reward_grants row per winner and an outbox row per grant. Nothing has gone to Kafka yet, and a crash now loses nothing.",
+     code: "BEGIN;\nUPDATE tournaments SET state = 'Completed' ...;\nINSERT INTO results ...  ROW_NUMBER() OVER\n  (PARTITION BY cohort_id ORDER BY score DESC, score_reached_at);\nINSERT INTO reward_grants (idempotency_key, ...) <c>'t42:anna:rank'</c>;\nINSERT INTO outbox (type, payload) <c>'RewardGrantRequested'</c>;\nCOMMIT;",
+     set: {"pg.tstate": "Completed", "pg.results": "Anna rank 1 of 50", "rewards.grant": "pending", "rewards.outbox": "unsent"}},
+    {hops: [["pg","orch"]], type: "db", chip: "FOR UPDATE SKIP LOCKED", title: "The relay finds unsent rows",
+     text: "A loop in each replica selects unsent outbox rows. SKIP LOCKED means that if the other replica already locked a row, this one skips it instead of waiting.",
+     code: "SELECT id, payload FROM outbox\nWHERE published_at IS NULL\nORDER BY created_at LIMIT 100\nFOR UPDATE SKIP LOCKED;"},
+    {hops: [["orch","kafka"]], type: "kafka", chip: "RewardGrantRequested", title: "Publish the reward request",
+     text: "The relay publishes to tournament.rewards.requested, then marks the row published. If it crashes in between, it sends the message again. That is fine because of the key.",
+     code: '{\n  "idempotencyKey": "t42:anna:rank",\n  "playerId": "anna",\n  "items": [{ "item": "dice", "qty": 2000 }]\n}',
+     set: {"rewards.outbox": "published"}},
+    {hops: [["kafka","economy"]], type: "kafka", chip: "grant 2,000 dice", title: "Economy pays once per key",
+     text: "Economy stores the idempotency key in the same transaction as the wallet change. A second copy of this message would change nothing.",
+     code: "INSERT INTO processed_grants (idempotency_key)\nVALUES ('t42:anna:rank') ON CONFLICT DO NOTHING;\n<c>-- 1 row: add 2,000 dice. 0 rows: duplicate, skip.</c>",
+     set: {"rewards.wallet": "2,350 dice"}},
+    {hops: [["economy","kafka"], ["kafka","orch"]], type: "kafka", chip: "RewardGranted", title: "Economy confirms",
+     text: "Economy publishes RewardGranted with the same key, and the Orchestrator consumes it."},
+    {hops: [["orch","pg"]], type: "db", chip: "status = granted", title: "Close the loop",
+     text: "The grant is marked granted. If one stays pending 10 minutes after finalization, the RewardsNotGranted alert pages on-call.",
+     code: "UPDATE reward_grants SET status = 'granted'\nWHERE idempotency_key = 't42:anna:rank' AND status = 'pending';",
+     set: {"rewards.grant": "granted"}},
+    {hops: [["bob","gateway"], ["gateway","api"], ["api","pg"]], type: "http", chip: "GET /results/unseen", title: "Bob opens the app later",
+     text: "Results were computed once, at finalization, so this is a cheap read of one precomputed row.",
+     code: "SELECT final_rank, final_score FROM results\nWHERE player_id = 'bob' AND seen_at IS NULL;"},
+    {hops: [["api","gateway"], ["gateway","bob"]], type: "http", chip: "rank 2 of 50", title: "The results popup",
+     text: "Bob finished second and his reward was granted while he was offline. He never had to press a claim button.",
+     set: {"screen.note": "Results popup: rank 2 of 50, 1,000 dice"}}
+  ]
+},
+{
+  id: "redis", name: "Redis goes down",
+  intro: "Redis fails during a live tournament. Reads fall back to PostgreSQL, and afterwards every leaderboard is rebuilt from the truth.",
+  init: {
+    pg: {anna: 1240, bob: 1235, carl: 1150},
+    redis: {anna: 1240, bob: 1235, carl: 1150, status: "up"},
+    screen: {anna: 1240, bob: 1235, carl: 1150, note: "Live"}
+  },
+  steps: [
+    {node: "redis", type: "fail", title: "Redis stops answering",
+     text: "A crash or a failover. The leaderboards in Redis are unavailable, but nothing in Redis was ever the only copy.",
+     set: {"down.redis": true, "redis.status": "down"}},
+    {hops: [["bob","gateway"], ["gateway","api"]], type: "http", chip: "GET /leaderboard", title: "Bob's app asks for the leaderboard",
+     text: "The live socket has gone quiet, so the app falls back to polling the REST endpoint."},
+    {hops: [["api","redis"]], type: "fail", chip: "timeout", title: "The Redis read fails fast",
+     text: "The call has a short timeout, so the request doesn't hang. A RedisConnectionException counts as a transient error.",
+     code: "catch (RedisException) { rows = await FromPostgresAsync(cohortId); }"},
+    {hops: [["api","pg"]], type: "db", chip: "ORDER BY ... LIMIT 50", title: "Fall back to PostgreSQL",
+     text: "Same 50 rows, from entries, using the index on cohort_id, score and score_reached_at. A few milliseconds instead of under one.",
+     code: "SELECT player_id, score\nFROM entries\nWHERE cohort_id = 'c91'\nORDER BY score DESC, score_reached_at ASC\nLIMIT 50;"},
+    {hops: [["api","gateway"], ["gateway","bob"]], type: "http", chip: "200 + X-Degraded", title: "Bob still gets his leaderboard",
+     text: "The response is correct, just a little slower. A header marks it degraded so dashboards can count these.",
+     set: {"screen.note": "Polling every 5 s with ETag"}},
+    {node: "realtime", type: "node", title: "Live pushes pause",
+     text: "No pub/sub while Redis is down, so no pushes. Players keep polling. No points are lost, because scoring writes PostgreSQL first."},
+    {node: "redis", type: "node", title: "Redis comes back empty",
+     text: "The new Redis instance is running but has no data. Reads would now return empty leaderboards, so we rebuild before switching back.",
+     set: {"down.redis": false, "redis": {status: "up, empty"}}},
+    {hops: [["pg","redis"]], type: "db", chip: "rebuild 1,000 sets", title: "Reproject from the truth",
+     text: "A job reads entries for t42 and rewrites every cohort's sorted set: 50,000 rows into 1,000 keys. Each key is rebuilt inside MULTI/EXEC, so readers never see a half-built set.",
+     code: "SELECT cohort_id, player_id, score, score_reached_at\nFROM entries WHERE tournament_id = 't42';\n<c>then per cohort:</c>\nMULTI\nDEL  lb:t42:c91\nZADD lb:t42:c91 ...50 members...\nEXEC",
+     set: {"redis": {anna: 1240, bob: 1235, carl: 1150, status: "up"}}},
+    {hops: [["redis","realtime"], ["realtime","gateway"], ["gateway","bob"]], type: "push", chip: "fresh snapshot", title: "Back to live",
+     text: "After reconnecting, each Realtime pod sends a fresh snapshot to every group it holds, because pub/sub has no history to replay.",
+     set: {"screen.note": "Live"}}
+  ]
+},
+{
+  id: "alert", name: "Something slows down",
+  intro: "PostgreSQL gets slow during a live tournament. Follow one metric from a line of C# to the on-call engineer's phone.",
+  init: {
+    mon: {fresh: "0.4 s", lag: "2 s", rule: "inactive", page: "quiet"}
+  },
+  steps: [
+    {node: "pg", type: "fail", title: "PostgreSQL gets slow",
+     text: "Say a heavy report from another team: commits take 400 ms instead of 5. Nothing is broken yet, but every batch takes longer.",
+     set: {"down.pg": true}},
+    {node: "worker", type: "node", title: "Freshness climbs",
+     text: "For every event the worker records the time from occurredAt to the Redis write. The p95 goes from 0.4 s to 2.6 s, and consumer lag grows.",
+     code: "_freshness.Record((now - evt.OccurredAt).TotalSeconds,\n    new(\"tournament_id\", \"t42\"));",
+     set: {"mon.fresh": "2.6 s", "mon.lag": "48 s"}},
+    {hops: [["prom","worker"], ["worker","prom"]], type: "metric", chip: "scrape /metrics", title: "Prometheus scrapes every 15 seconds",
+     text: "Prometheus pulls. It calls /metrics on every pod it found through the ServiceMonitor in the Helm chart, and stores the numbers.",
+     code: "tournament_score_freshness_seconds_bucket{le=\"1\"} 88410\ntournament_score_freshness_seconds_bucket{le=\"2\"} 93870\ntournament_score_freshness_seconds_bucket{le=\"+Inf\"} 100000"},
+    {node: "prom", type: "metric", title: "The rule stays true for 5 minutes",
+     text: "The alert has for: 5m, so a 20-second blip doesn't wake anyone. This one keeps going, so it fires.",
+     code: "histogram_quantile(0.95,\n  sum by (le) (rate(tournament_score_freshness_seconds_bucket[5m]))\n) > 2\nand on() (sum(tournament_active) > 0)",
+     set: {"mon.rule": "firing, critical"}},
+    {hops: [["prom","alert"]], type: "metric", chip: "ScoreFreshnessSlow", title: "Alertmanager receives it",
+     text: "It groups related alerts into one incident and routes on the labels: severity=critical and team=tournaments go to PagerDuty, warnings go to Slack."},
+    {hops: [["alert","pager"]], type: "metric", chip: "page + runbook", title: "On-call gets paged",
+     text: "The page links the runbook: check KEDA scaled up, check PostgreSQL and Redis latency panels, look for a paused partition in worker logs.",
+     set: {"mon.page": "paged, runbook open"}},
+    {node: "worker", type: "node", title: "Recovered",
+     text: "The heavy query is stopped and KEDA had already added pods for the lag. Freshness drops back under a second and the alert resolves on its own.",
+     set: {"down.pg": false, "mon.fresh": "0.7 s", "mon.lag": "3 s", "mon.rule": "resolved", "mon.page": "resolved"}}
+  ]
+}
+];
+
+/* ---------- state ---------- */
+const clone = o => JSON.parse(JSON.stringify(o));
+function applySet(st, set){
+  for (const path in set) {
+    const parts = path.split(".");
+    let o = st;
+    for (let i = 0; i < parts.length - 1; i++) { if (!o[parts[i]]) o[parts[i]] = {}; o = o[parts[i]]; }
+    const v = set[path];
+    o[parts[parts.length - 1]] = (v && typeof v === "object") ? clone(v) : v;
+  }
+}
+function stateAt(sc, i){
+  const st = clone(sc.init); st.down = st.down || {};
+  for (let j = 0; j <= i; j++) if (sc.steps[j].set) applySet(st, sc.steps[j].set);
+  return st;
+}
+
+/* ---------- inspector ---------- */
+const fmt = v => typeof v === "number" ? v.toLocaleString("en-US") : String(v);
+function rankTable(obj, me, prevObj){
+  const rows = P.filter(p => typeof obj[p] === "number").map(p => [p, obj[p]]).sort((a,b) => b[1] - a[1]);
+  if (!rows.length) return "";
+  const prevRank = prevObj ? P.filter(p => typeof prevObj[p] === "number").sort((a,b) => prevObj[b] - prevObj[a]) : [];
+  return "<table>" + rows.map((r, i) => {
+    const ch = prevObj && (prevObj[r[0]] !== r[1] || prevRank[i] !== r[0]) ? " changed" : "";
+    return `<tr class="${r[0] === me ? "me" : ""}${ch}"><td class="rk">${i + 1}</td><td>${NAMES[r[0]]}${r[0] === me ? " (you)" : ""}</td><td>${fmt(r[1])}</td></tr>`;
+  }).join("") + "</table>";
+}
+function kvTable(obj, prevObj, labels){
+  return "<table>" + labels.filter(l => obj[l[0]] !== undefined).map(l => {
+    const ch = prevObj && prevObj[l[0]] !== obj[l[0]] ? ' class="changed"' : "";
+    return `<tr${ch}><td>${l[1]}</td><td>${fmt(obj[l[0]])}</td></tr>`;
+  }).join("") + "</table>";
+}
+function renderState(st, prev){
+  const out = [];
+  const pv = k => prev ? prev[k] : null;
+  if (st.kafka) out.push(`<div class="insp"><h3>Kafka</h3><div class="sub">gameplay.actions · partition P2</div>${kvTable(st.kafka, pv("kafka"), [["end","Newest offset"],["committed","Committed (next to read)"],["owner","Read by"]])}</div>`);
+  if (st.pg) {
+    const pg = st.pg, pp = pv("pg");
+    const players = "<table>" + P.filter(p => pg[p] !== undefined).map(p => `<tr${pp && pp[p] !== pg[p] ? ' class="changed"' : ""}><td>${NAMES[p]}</td><td>${fmt(pg[p])}</td></tr>`).join("") + "</table>";
+    out.push(`<div class="insp"><h3>PostgreSQL</h3><div class="sub">entries.score (source of truth)</div>${players}${kvTable(pg, pp, [["events","score_events rows"],["tstate","tournament state"],["results","results"]])}</div>`);
+  }
+  if (st.redis) {
+    const r = st.redis, down = st.down && st.down.redis;
+    const note = r.status && r.status !== "up" ? `<div class="note${down ? " bad" : ""}">${down ? "Unavailable" : "Status: " + r.status}</div>` : "";
+    out.push(`<div class="insp"><h3>Redis</h3><div class="sub">lb:t42:c91 sorted set</div>${down ? "" : rankTable(r, null, pv("redis"))}${note}</div>`);
+  }
+  if (st.screen) {
+    const s = st.screen, ps = pv("screen");
+    const note = s.note ? `<div class="note${ps && ps.note !== s.note ? " changed" : ""}">${s.note}</div>` : "";
+    out.push(`<div class="insp"><h3>Bob's screen</h3><div class="sub">what the player sees</div>${rankTable(s, "bob", ps)}${note}</div>`);
+  }
+  if (st.rewards) out.push(`<div class="insp"><h3>Rewards</h3><div class="sub">Anna's rank 1 prize</div>${kvTable(st.rewards, pv("rewards"), [["grant","reward_grants row"],["outbox","outbox row"],["wallet","Anna's wallet"]])}</div>`);
+  if (st.mon) out.push(`<div class="insp"><h3>Monitoring</h3><div class="sub">what Prometheus sees</div>${kvTable(st.mon, pv("mon"), [["fresh","Freshness p95"],["lag","Scoring lag"],["rule","ScoreFreshnessSlow"],["page","On-call"]])}</div>`);
+  $("state").innerHTML = out.join("");
+  for (const id in nodeEls) nodeEls[id].classList.toggle("down", !!(st.down && st.down[id]));
+}
+
+/* ---------- narration ---------- */
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function codeHtml(src){
+  return esc(src).replace(/&lt;c&gt;([\s\S]*?)&lt;\/c&gt;/g, '<span class="c">$1</span>');
+}
+function setNarration(sc, i){
+  const pill = $("pill");
+  if (i < 0) {
+    $("count").textContent = sc.steps.length + " steps";
+    pill.textContent = "ready"; pill.style.setProperty("--pc", "var(--muted)");
+    $("title").textContent = sc.name;
+    $("text").textContent = sc.intro + " Press Play, or use Next to go one step at a time.";
+    $("code").hidden = true;
+  } else {
+    const s = sc.steps[i];
+    $("count").textContent = "Step " + (i + 1) + " of " + sc.steps.length;
+    pill.textContent = TYPE_LABEL[s.type] || s.type;
+    pill.style.setProperty("--pc", s.type === "node" ? "var(--muted)" : "var(--p-" + s.type + ")");
+    $("title").textContent = s.title;
+    $("text").textContent = s.text;
+    if (s.code) { $("code").innerHTML = codeHtml(s.code); $("code").hidden = false; } else $("code").hidden = true;
+  }
+  $("progress").textContent = Math.max(0, i + 1) + " / " + sc.steps.length;
+  $("bar").style.width = ((i + 1) / sc.steps.length * 100) + "%";
+  [...$("steps").children].forEach((li, j) => { li.className = j < i ? "done" : j === i ? "now" : ""; });
+  $("prev").disabled = i < 0;
+  $("next").disabled = i >= sc.steps.length - 1;
+}
+
+/* ---------- animation ---------- */
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const packet = $("packet"), pc = packet.querySelector("circle"), pr = packet.querySelector("rect"), pt = packet.querySelector("text");
+let token = 0, timer = null, playing = false, speed = 1;
+let cur = 0, idx = -1;
+
+function clearHighlights(){
+  Object.values(edgeEls).forEach(e => e.classList.remove("active"));
+  Object.values(nodeEls).forEach(n => n.classList.remove("hot"));
+  $("arch").classList.remove("busy");
+}
+function hotNode(id){
+  const n = nodeEls[id]; if (!n) return;
+  n.classList.remove("hot"); void n.getBBox(); n.classList.add("hot");
+}
+function placePacket(p, label){
+  packet.setAttribute("transform", `translate(${p.x},${p.y})`);
+  if (label !== undefined) {
+    pt.textContent = label;
+    const w = label ? pt.getComputedTextLength() + 16 : 0;
+    pr.style.display = label ? "" : "none";
+    pr.setAttribute("width", w);
+    packet._w = w;
+  }
+  const w = packet._w || 0;
+  // keep chip inside the drawing
+  let ox = -w / 2;
+  if (p.x + ox < 4) ox = 4 - p.x;
+  if (p.x + ox + w > 1186) ox = 1186 - w - p.x;
+  const rows = [40, 250, 460, 600];
+  const row = rows.find(t => p.y >= t - 6 && p.y <= t + H + 6);
+  const oy = row !== undefined ? (row - 32) - p.y : -38;
+  pr.setAttribute("x", ox); pr.setAttribute("y", oy);
+  pt.setAttribute("x", ox + 8); pt.setAttribute("y", oy + 17);
+}
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+function fly(edge, dur, my, done){
+  const L = edge.el.getTotalLength();
+  const at = f => edge.el.getPointAtLength(edge.rev ? L * (1 - f) : L * f);
+  if (reduceMotion || dur <= 0) { placePacket(at(1)); done(); return; }
+  const t0 = performance.now();
+  const frame = now => {
+    if (my !== token) return;
+    const t = Math.min(1, (now - t0) / dur);
+    placePacket(at(ease(t)));
+    if (t < 1) requestAnimationFrame(frame); else done();
+  };
+  requestAnimationFrame(frame);
+}
+
+function showStep(i, animate){
+  const sc = S[cur];
+  token++; const my = token;
+  clearTimeout(timer);
+  clearHighlights();
+  idx = i;
+  setNarration(sc, i);
+  if (i < 0) {
+    packet.style.display = "none";
+    renderState(stateAt(sc, -1), null);
+    return;
+  }
+  const s = sc.steps[i];
+  const before = stateAt(sc, i - 1), after = stateAt(sc, i);
+  const color = s.type === "node" ? "var(--muted)" : "var(--p-" + s.type + ")";
+  const finish = () => {
+    if (my !== token) return;
+    renderState(after, animate ? before : null);
+    const target = s.node || s.hops[s.hops.length - 1][1];
+    hotNode(target);
+    if (playing) {
+      if (i >= sc.steps.length - 1) { setPlaying(false); return; }
+      const dwell = reduceMotion ? 2600 : 1500 + Math.min(2200, s.text.length * 12);
+      timer = setTimeout(() => { if (my === token) showStep(i + 1, true); }, dwell / speed);
+    }
+  };
+  if (!animate) renderState(before, null);
+
+  if (s.hops) {
+    packet.style.display = "";
+    packet.style.setProperty("--pc", color);
+    $("arch").classList.add("busy");
+    const first = resolve(s.hops[0][0], s.hops[0][1]);
+    const L0 = first.el.getTotalLength();
+    placePacket(first.el.getPointAtLength(first.rev ? L0 : 0), s.chip || "");
+    let k = 0;
+    const next = () => {
+      if (my !== token) return;
+      if (k >= s.hops.length) { finish(); return; }
+      const [a, b] = s.hops[k++];
+      const e = resolve(a, b);
+      e.el.style.setProperty("--pc", color);
+      e.el.classList.add("active");
+      const perHop = (s.hops.length > 1 ? 950 : 1300) / speed;
+      fly(e, animate ? perHop : 0, my, () => { if (animate && k < s.hops.length) hotNode(b); next(); });
+    };
+    next();
+  } else {
+    packet.style.display = "none";
+    finish();
+  }
+}
+
+/* ---------- controls ---------- */
+function setPlaying(on){
+  playing = on;
+  $("play").querySelector("span").textContent = on ? "Pause" : (idx >= S[cur].steps.length - 1 ? "Replay" : "Play");
+  $("play").querySelector("svg").innerHTML = on ? '<path d="M3.5 2.5h3.2v11H3.5zM9.3 2.5h3.2v11H9.3z"/>' : '<path d="M4 2.5v11l9-5.5z"/>';
+}
+function togglePlay(){
+  if (playing) { setPlaying(false); clearTimeout(timer); return; }
+  setPlaying(true);
+  const last = S[cur].steps.length - 1;
+  showStep(idx >= last ? 0 : idx + 1, true);
+}
+function selectScenario(n, fromHash){
+  cur = n; setPlaying(false);
+  [...$("tabs").children].forEach((b, j) => b.setAttribute("aria-selected", j === n ? "true" : "false"));
+  $("steps").innerHTML = S[n].steps.map((s, j) => `<li><button type="button" data-i="${j}">${s.title}</button></li>`).join("");
+  showStep(-1, false);
+  if (!fromHash) { try { history.replaceState(null, "", "#" + S[n].id); } catch (e) {} }
+}
+
+$("tabs").innerHTML = S.map((s, j) => `<button class="tab" role="tab" type="button" data-n="${j}" aria-selected="false"><span class="n">${j + 1}</span>${s.name}</button>`).join("");
+$("tabs").addEventListener("click", e => { const b = e.target.closest(".tab"); if (b) selectScenario(+b.dataset.n); });
+$("steps").addEventListener("click", e => { const b = e.target.closest("button[data-i]"); if (!b) return; setPlaying(false); showStep(+b.dataset.i, true); });
+$("play").addEventListener("click", togglePlay);
+$("next").addEventListener("click", () => { setPlaying(false); if (idx < S[cur].steps.length - 1) showStep(idx + 1, true); });
+$("prev").addEventListener("click", () => { setPlaying(false); if (idx >= 0) showStep(idx - 1, false); });
+$("restart").addEventListener("click", () => { setPlaying(false); showStep(-1, false); });
+$("speed").addEventListener("change", e => { speed = parseFloat(e.target.value) || 1; });
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if (tag === "select" || tag === "input" || tag === "textarea") return;
+  if (e.key === " " && tag !== "button") { e.preventDefault(); togglePlay(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); $("next").click(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); $("prev").click(); }
+});
+
+const fromHash = (location.hash || "").replace("#", "");
+const start = Math.max(0, S.findIndex(s => s.id === fromHash));
+selectScenario(start, true);
+window.addEventListener("hashchange", () => {
+  const h = location.hash.replace("#", ""); const n = S.findIndex(s => s.id === h);
+  if (n >= 0 && n !== cur) selectScenario(n, true);
+});
+})();
+</script>
+</body>
+</html>
